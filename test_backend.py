@@ -79,7 +79,7 @@ def test_api():
     subs = cursor.fetchall()
     print(f"SQLite Subjects: {[s['name'] for s in subs]}")
 
-    cursor.execute("SELECT name, needs_focus FROM topics")
+    cursor.execute("SELECT name, needs_focus FROM topics WHERE subject_id IN (SELECT id FROM subjects WHERE user_id = ?)", (user_id,))
     tops = cursor.fetchall()
     print(f"SQLite Topics: {[(t['name'], 'Needs Focus: ' + str(bool(t['needs_focus']))) for t in tops]}")
     conn.close()

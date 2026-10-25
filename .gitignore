@@ -1,4 +1,25 @@
+# Environments & Secrets
 .env
+.env.local
+.env.*.local
+venv/
+.venv/
+env/
+
+# Database files
 *.db
+*.sqlite3
+
+# Python bytecode & caches
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.pytest_cache/
+
+# OS and logs
+*.log
+.DS_Store
+Thumbs.db
+
+*.sqlite
+uploads/

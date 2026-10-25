@@ -1,0 +1,62 @@
+import re
+
+svg_content = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="100%" height="100%" fill="none">
+  <defs>
+    <linearGradient id="cogGrad" x1="10%" y1="0%" x2="90%" y2="100%">
+      <stop offset="0%" stop-color="#8B5CF6" />
+      <stop offset="35%" stop-color="#6366F1" />
+      <stop offset="70%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#22D3EE" />
+    </linearGradient>
+    <linearGradient id="cogBook" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#E0E7FF" stop-opacity="0.85" />
+    </linearGradient>
+    <filter id="cogGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Glowing background ambient layer -->
+  <circle cx="56" cy="58" r="46" fill="url(#cogGrad)" opacity="0.15" filter="url(#cogGlow)"/>
+
+  <!-- Main C Shape Body with dimensional overlapping curves -->
+  <path d="M 82 32 C 73 20 58 14 42 17 C 22 21 8 39 8 60 C 8 83 24 101 47 103 C 65 104 80 94 88 80 C 89.5 77 88 74 85 73.5 C 82 73 79.5 75 78 77.5 C 72 87 60 92 46 91 C 30 90 18 76 18 60 C 18 43 29 29 45 26 C 58 24 70 29 77 38 C 78.5 40.5 81.5 41 84 39.5 C 86.5 38 87 35 85 32.5 Z" fill="url(#cogGrad)"/>
+
+  <!-- Inner highlight curve for 3D depth -->
+  <path d="M 80 34 C 71 22 57 17 42 20 C 24 24 12 40 12 60 C 12 79 26 95 45 97 C 61 98 74 90 81 78" stroke="url(#cogGrad)" stroke-width="6" stroke-linecap="round" opacity="0.9"/>
+
+  <!-- Open Book Symbol nestled inside the C -->
+  <g transform="translate(42, 60) scale(0.68)">
+    <!-- Book Left Page -->
+    <path d="M -3 3 C -12 -3 -24 -2 -33 3 L -33 26 C -24 21 -12 20 -3 26 Z" fill="url(#cogBook)" />
+    <!-- Book Right Page -->
+    <path d="M 3 3 C 12 -3 24 -2 33 3 L 33 26 C 24 21 12 20 3 26 Z" fill="url(#cogBook)" />
+    <!-- Book Spine -->
+    <path d="M 0 2 L 0 27" stroke="#6366F1" stroke-width="2.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- AI Neural Network Nodes & Connector Branches on upper-right -->
+  <g transform="translate(68, 20)">
+    <!-- Branch Connector Lines -->
+    <path d="M 8 16 L 22 10 M 22 10 L 32 2 M 22 10 L 34 18" stroke="#38BDF8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    
+    <!-- Central Node -->
+    <circle cx="22" cy="10" r="4.5" fill="#38BDF8" />
+    <circle cx="22" cy="10" r="2.2" fill="#FFFFFF" />
+
+    <!-- Top Node -->
+    <circle cx="32" cy="2" r="3.5" fill="#818CF8" />
+    <circle cx="32" cy="2" r="1.6" fill="#FFFFFF" />
+
+    <!-- Lower Node -->
+    <circle cx="34" cy="18" r="4" fill="#22D3EE" />
+    <circle cx="34" cy="18" r="1.8" fill="#FFFFFF" />
+  </g>
+</svg>'''
+
+with open('assets/cognify_logo.svg', 'w') as f:
+    f.write(svg_content)
+
+print('Saved assets/cognify_logo.svg successfully!')
