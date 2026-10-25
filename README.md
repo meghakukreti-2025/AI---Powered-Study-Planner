@@ -61,9 +61,6 @@ CREATE TABLE topics (
     FOREIGN KEY (subject_id) REFERENCES subjects (id) ON DELETE CASCADE
 );
 ```
-
----
-
 ## 🔌 Flask REST API Endpoints
 
 | Method | Endpoint | Description | Payload / Query |
@@ -73,31 +70,6 @@ CREATE TABLE topics (
 | `POST` | `/save-syllabus` | Saves courses & topics with `needs_focus` flag | `{ "userId": 1, "email": "...", "subjects": [...] }` |
 | `GET` | `/get-syllabus` | Retrieves saved courses & topics for logged-in user | `?email=student@college.edu` |
 | `GET` | `/` | Serves `index.html` frontend directly | None |
-
----
-
-## 🎓 Viva Questions & Answers (For Your Examiner)
-
-### Q1: How does Flask connect to SQLite?
-> **Answer**: In Python, we use the built-in `sqlite3` standard library module. We create a connection function `sqlite3.connect('study_planner.db')` and set `conn.row_factory = sqlite3.Row` so we can access database columns by name (like dictionaries). To execute SQL statements, we create a cursor `cursor = conn.cursor()`, execute queries with `cursor.execute()`, and commit transactions with `conn.commit()`.
-
-### Q2: How does the frontend JavaScript communicate with the Flask backend?
-> **Answer**: The frontend `app.js` uses the native browser `fetch()` API with `async/await`. For example:
-> ```javascript
-> const response = await fetch("http://127.0.0.1:5000/save-syllabus", {
->   method: "POST",
->   headers: { "Content-Type": "application/json" },
->   body: JSON.stringify(payload)
-> });
-> const data = await response.json();
-> ```
-> Flask reads this JSON using `request.get_json()` and returns responses using `jsonify()`.
-
-### Q3: How are weak topics represented in the database?
-> **Answer**: In SQLite, boolean values are represented as integers (`0` for False, `1` for True). In our `topics` table, the column `needs_focus INTEGER NOT NULL DEFAULT 0` stores `1` when the student checks "Needs Extra Focus" and `0` otherwise.
-
-### Q4: How is password security handled?
-> **Answer**: Passwords are never stored as plain text. We use `werkzeug.security`'s `generate_password_hash()` upon registration and `check_password_hash()` during login.
 
 ---
 
