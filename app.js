@@ -3,8 +3,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const API_BASE_URL = window.location.origin.includes(":5000") ? window.location.origin : "http://127.0.0.1:5000";
 
+  const savedUserJson = localStorage.getItem("cognify_user");
+  let initialUser = { id: null, firstName: "Student", lastName: "", email: "", displayName: "Student", isLoggedIn: false };
+  if (savedUserJson) {
+    try {
+      const parsed = JSON.parse(savedUserJson);
+      if (parsed && typeof parsed === "object") {
+        initialUser = { ...initialUser, ...parsed };
+      }
+    } catch (_) {}
+  }
+
   const state = {
-    user: { id: null, firstName: "Megha", lastName: "", email: "", displayName: "Megha", isLoggedIn: false },
+    user: initialUser,
     subjects: [],
     availability: { hours: 3.5, startTime: "18:00", endTime: "22:30" },
     collapsedSubjects: {},
@@ -233,17 +244,27 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Update Display Name Handler
   function updateUserDisplayName(name) {
-    const finalName = name || "Megha";
+    const finalName = name || (state.user && (state.user.displayName || state.user.firstName)) || "Student";
     state.user.firstName = finalName;
     state.user.displayName = finalName;
     if (elements.userDisplayName) {
       elements.userDisplayName.textContent = finalName;
     }
+    if (state.user.isLoggedIn) {
+      try {
+        localStorage.setItem("cognify_user", JSON.stringify(state.user));
+      } catch (_) {}
+    }
+  }
+
+  // Initialize user display name from session/state
+  if (state.user && (state.user.displayName || state.user.firstName)) {
+    updateUserDisplayName(state.user.displayName || state.user.firstName);
   }
 
   if (elements.btnEditDisplayName) {
     elements.btnEditDisplayName.addEventListener("click", async () => {
-      const current = state.user.displayName || state.user.firstName || "Megha";
+      const current = state.user.displayName || state.user.firstName || "Student";
       const newName = prompt("Enter your preferred display name:", current);
       if (newName && newName.trim() && newName.trim() !== current) {
         const trimmed = newName.trim();
@@ -289,12 +310,15 @@ document.addEventListener("DOMContentLoaded", () => {
         const result = await response.json();
 
         if (result.success && result.user) {
-          state.user = result.user;
+          state.user = { ...result.user, isLoggedIn: true };
           state.subjects = result.subjects || [];
 
-          // Format clean first name (specifically ensuring Megha is displayed)
-          const displayName = result.user.displayName || result.user.firstName || "Megha";
+          // Format clean first name
+          const displayName = result.user.displayName || result.user.firstName || "Student";
           updateUserDisplayName(displayName);
+          try {
+            localStorage.setItem("cognify_user", JSON.stringify(state.user));
+          } catch (_) {}
 
           if (elements.demoModeBadge) elements.demoModeBadge.style.display = result.user.isDemo ? "inline-flex" : "none";
           if (elements.demoBannerActions) elements.demoBannerActions.style.display = result.user.isDemo ? "flex" : "none";
@@ -313,8 +337,11 @@ document.addEventListener("DOMContentLoaded", () => {
   if (elements.authGuestLink) {
     elements.authGuestLink.addEventListener("click", (e) => {
       e.preventDefault();
-      state.user = { id: 999, email: "guest@college.edu", firstName: "Megha", displayName: "Megha", isLoggedIn: true };
-      updateUserDisplayName("Megha");
+      state.user = { id: 999, email: "guest@college.edu", firstName: "Guest", displayName: "Guest", isLoggedIn: true };
+      updateUserDisplayName("Guest");
+      try {
+        localStorage.setItem("cognify_user", JSON.stringify(state.user));
+      } catch (_) {}
       if (elements.demoModeBadge) elements.demoModeBadge.style.display = "none";
       if (elements.demoBannerActions) elements.demoBannerActions.style.display = "none";
       showToast("Signed in as Guest Explorer", "normal");
@@ -467,10 +494,13 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         // Clear demo state and restore defaults
-        state.user = { id: null, firstName: "Megha", lastName: "", email: "", displayName: "Megha", isLoggedIn: false };
+        state.user = { id: null, firstName: "Student", lastName: "", email: "", displayName: "Student", isLoggedIn: false };
         state.subjects = [];
         state.collapsedSubjects = {};
-        updateUserDisplayName("Megha");
+        try {
+          localStorage.removeItem("cognify_user");
+        } catch (_) {}
+        updateUserDisplayName("Student");
 
         if (elements.demoModeBadge) elements.demoModeBadge.style.display = "none";
         if (elements.demoBannerActions) elements.demoBannerActions.style.display = "none";

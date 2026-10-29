@@ -12,10 +12,19 @@ from dotenv import load_dotenv
 from werkzeug.security import generate_password_hash, check_password_hash
 from aktu_demo_dataset import get_aktu_demo_dataset
 
+try:
+    import pdfplumber
+except ImportError:
+    pdfplumber = None
+
 load_dotenv()
 
 app = Flask(__name__, static_folder=".", static_url_path="")
+app.secret_key = os.getenv("SECRET_KEY", "cognify-study-planner-secret-key-default")
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+if not os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") == "your_gemini_api_key_here":
+    app.logger.info("Notice: GEMINI_API_KEY not configured. AI features will gracefully fall back to local deterministic algorithms.")
 
 DATABASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'study_planner.db')
 
@@ -121,13 +130,6 @@ def init_db():
         cursor.execute("ALTER TABLE users ADD COLUMN is_demo INTEGER DEFAULT 0")
     if "created_at" not in user_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-
-    # Migrate any existing Megha accounts to preferred display name 'Megha'
-    cursor.execute(
-        "UPDATE users SET first_name = 'Megha', last_name = 'Kukreti', display_name = 'Megha' "
-        "WHERE (email LIKE '%meghakukreti%' OR email LIKE '%megha00%' OR first_name LIKE '%meghakukreti%') "
-        "AND (first_name != 'Megha' OR display_name != 'Megha')"
-    )
 
     # Ensure demo guest user exists for seamless guest testing
     cursor.execute("SELECT id FROM users WHERE email = 'guest@college.edu'")
@@ -260,23 +262,16 @@ def index():
 def clean_first_name(email, provided_name=""):
     """
     Derives clean first name without concatenating usernames or hardcoding for all users.
-    Specifically handles compound email usernames like meghakukreti -> Megha.
     """
     if provided_name and provided_name.strip():
         name = provided_name.strip()
-        if name.lower().startswith("meghakukreti"):
-            return "Megha"
-        # Return first word if full name provided
         parts = name.split()
         return parts[0].capitalize() if parts else name.capitalize()
 
-    prefix = email.split("@")[0].strip().lower()
-    if "meghakukreti" in prefix or prefix.startswith("megha"):
-        return "Megha"
-
+    prefix = email.split("@")[0].strip().lower() if email else ""
     # Split by standard delimiters like dots, dashes, underscores
-    tokens = re.split(r'[._-]+', prefix)
-    first_token = re.sub(r'\d+', '', tokens[0]).strip()
+    tokens = re.split(r'[._-]+', prefix) if prefix else []
+    first_token = re.sub(r'\d+', '', tokens[0]).strip() if tokens else ""
     if first_token:
         return first_token.capitalize()
     return "Student"
@@ -367,9 +362,6 @@ def login():
         display_name = user_row["display_name"]
     
     first_name = display_name or user_row["first_name"] or clean_first_name(user_row["email"])
-    # Handle existing legacy concatenated Meghakukreti
-    if first_name.lower().startswith("meghakukreti"):
-        first_name = "Megha"
 
     user_obj = {
         "id": user_row["id"],
@@ -1829,10 +1821,6 @@ def parse_syllabus_text(text):
 
     return merge_subject_entries([], subjects)
 
-import re
-import json
-# pyrefly: ignore[missing-import]
-from flask import jsonify, request
 
 def clean_pdf_text_for_units(raw_text):
     """Remove only identifiable administrative/outcome lines; preserve syllabus topics."""
@@ -1853,27 +1841,78 @@ def clean_pdf_text_for_units(raw_text):
     return "\n".join(cleaned)
 
 
-# pyrefly: ignore[missing-import]
-import pdfplumber
-
-
 def sanitize_syllabus_text(pdf_file):
     """Read text pages without dropping legitimate subject/unit headings."""
+    if pdfplumber is None:
+        return ""
     pages = []
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text(layout=False) or ""
-            if text.strip() and not is_evaluation_scheme_page(text):
-                pages.append(clean_pdf_text_for_units(text))
+    try:
+        with pdfplumber.open(pdf_file) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text(layout=False) or ""
+                if text.strip() and not is_evaluation_scheme_page(text):
+                    pages.append(clean_pdf_text_for_units(text))
+    except Exception as exc:
+        app.logger.warning("sanitize_syllabus_text error: %s", exc)
+        return ""
     return "\n".join(page for page in pages if page.strip())
 
 
-def extract_with_gemini(cleaned_text):
-    """Chunk large syllabi to avoid truncation; use the installed google-genai client."""
+def extract_with_gemini(cleaned_text="", pdf_path=""):
+    """
+    Multimodal & text chunking syllabus extractor using Gemini AI.
+    1. If pdf_path is provided, attempts direct native PDF ingestion (multimodal vision + text),
+       which seamlessly handles scanned images, screenshots, tables, and diverse document styles.
+    2. Falls back to text chunking if pdf_path is not available or if binary payload exceeds limits.
+    """
     if not GENAI_AVAILABLE or not os.getenv("GEMINI_API_KEY"):
         return []
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-    # Chunk at line boundaries with a small overlap for subject headings.
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key or api_key == "your_gemini_api_key_here":
+        return []
+    client = genai.Client(api_key=api_key)
+
+    system_prompt = (
+        "Extract academic course subjects, their units/modules/sections, and specific study topics "
+        "from the provided syllabus document. Return a JSON array of subject objects: "
+        "[{\"name\": \"Subject Name\", \"code\": \"Optional Code\", \"semester\": 3, \"units\": [{\"unitNumber\": 1, \"unitTitle\": \"Unit Title\", \"topics\": [\"Topic 1\", \"Topic 2\"]}], \"topics\": [\"Topic 1\", \"Topic 2\"]}]. "
+        "Ignore Course Outcomes (CO1-CO5), Bloom's taxonomy tags, credit hour ratios, and evaluation mark schemes. "
+        "Preserve exact subject names and distinct study topics. Do not invent content."
+    )
+
+    # 1. Native Multimodal PDF Ingestion (handles scanned screenshots & complex layouts)
+    if pdf_path and os.path.exists(pdf_path):
+        try:
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            if pdf_bytes and len(pdf_bytes) < 30 * 1024 * 1024:
+                part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+                for model_name in ('gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash'):
+                    try:
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=[part, system_prompt],
+                            config=types.GenerateContentConfig(response_mime_type="application/json"),
+                        )
+                        data = json.loads(response.text or '[]')
+                        if isinstance(data, dict):
+                            data = data.get('subjects') or data.get('courses') or [data]
+                        if isinstance(data, list) and len(data) > 0:
+                            extracted = []
+                            for item in data:
+                                if isinstance(item, dict) and (item.get('name') or item.get('subject')):
+                                    extracted.append(item)
+                            if extracted:
+                                return extracted
+                    except Exception as exc:
+                        app.logger.warning("Gemini multimodal extraction with %s failed: %s", model_name, exc)
+                        continue
+        except Exception as e:
+            app.logger.warning("Gemini multimodal read error: %s", e)
+
+    # 2. Text Chunking Fallback
+    if not cleaned_text:
+        return []
     lines = cleaned_text.splitlines()
     chunks, chunk, length = [], [], 0
     for line in lines:
@@ -1888,16 +1927,7 @@ def extract_with_gemini(cleaned_text):
 
     extracted = []
     for chunk_text in chunks:
-        prompt = (
-            "Extract academic syllabus subjects and their actual topics from the following "
-            "document excerpt. Return a JSON array of objects with keys 'subject' and "
-            "'topics' (array of strings). Preserve subject names exactly, include every "
-            "explicit Unit/Module heading and distinct technical topic, and prefix each "
-            "topic with its unit number when available. Ignore evaluation tables, course "
-            "outcomes, credits, references, and lab-only subjects. Do not invent subjects "
-            "or topics. A chunk may begin or end midway through a subject: never invent "
-            "a subject name for orphaned content.\n\n" + chunk_text
-        )
+        prompt = system_prompt + "\n\n" + chunk_text
         for model_name in ('gemini-2.5-flash', 'gemini-2.0-flash'):
             try:
                 response = client.models.generate_content(
@@ -1913,6 +1943,7 @@ def extract_with_gemini(cleaned_text):
                     break
             except Exception as exc:
                 app.logger.warning("Gemini extraction attempt failed: %s", exc)
+                continue
     return extracted
 
 
@@ -1946,6 +1977,47 @@ def upload_syllabus_pdf():
         from pdf_extractor import SyllabusPDFExtractor
         extractor = SyllabusPDFExtractor()
         result = extractor.extract(temp_path)
+
+        if not result.get("subjects"):
+            # Attempt Gemini fallback extraction if available
+            api_key = os.getenv("GEMINI_API_KEY")
+            if GENAI_AVAILABLE and api_key and api_key != "your_gemini_api_key_here":
+                sanitized_text = sanitize_syllabus_text(temp_path)
+                gemini_subjects = extract_with_gemini(cleaned_text=sanitized_text, pdf_path=temp_path)
+                if gemini_subjects:
+                        formatted_subs = []
+                        total_topics = 0
+                        total_units = 0
+                        for idx, s in enumerate(gemini_subjects):
+                            s_name = s.get("subject") or s.get("name") or f"Subject {idx + 1}"
+                            s_topics_raw = s.get("topics", [])
+                            formatted_topics = []
+                            for t in s_topics_raw:
+                                if isinstance(t, str):
+                                    formatted_topics.append({"name": t.strip(), "needsFocus": False, "isImportant": False, "completed": False})
+                                elif isinstance(t, dict):
+                                    formatted_topics.append({"name": t.get("name", "").strip(), "needsFocus": bool(t.get("needsFocus", False)), "isImportant": bool(t.get("isImportant", False)), "completed": bool(t.get("completed", False))})
+                            total_topics += len(formatted_topics)
+                            u_list = s.get("units", [])
+                            total_units += len(u_list) if u_list else 1
+                            formatted_subs.append({
+                                "name": s_name,
+                                "title": s_name,
+                                "code": s.get("code", ""),
+                                "semester": s.get("semester", 3),
+                                "topics": formatted_topics,
+                                "units": u_list
+                            })
+                        if formatted_subs:
+                            result = {
+                                "subjects": formatted_subs,
+                                "subjectCount": len(formatted_subs),
+                                "totalUnits": total_units,
+                                "totalTopics": total_topics,
+                                "pagesProcessed": result.get("pagesProcessed", 0),
+                                "warnings": ["Extracted using Gemini AI fallback"],
+                                "diagnostics": {"engine": "gemini_fallback"}
+                            }
 
         if not result.get("subjects"):
             return jsonify({
@@ -2138,7 +2210,7 @@ def generate_schedule():
             }}
             """
 
-            for model_name in ['gemini-flash-latest', 'gemini-2.5-flash-lite']:
+            for model_name in ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash']:
                 try:
                     response = client.models.generate_content(
                         model=model_name,
@@ -2151,7 +2223,7 @@ def generate_schedule():
                             return jsonify({"success": True, "schedule": parsed["schedule"]}), 200
                 except Exception as exc:
                     app.logger.warning("Gemini timetable generation failed with %s: %s", model_name, exc)
-                    break
+                    continue
         except Exception as e:
             app.logger.warning("Gemini scheduler error: %s", e)
 
@@ -2160,5 +2232,6 @@ def generate_schedule():
     return jsonify({"success": True, "schedule": [local_schedule]}), 200
 
 if __name__ == "__main__":
-    port = int(os.getenv("FLASK_PORT", 5000))
-    app.run(debug=True, port=port)
+    port = int(os.getenv("PORT") or os.getenv("FLASK_PORT") or 5000)
+    debug = os.getenv("FLASK_ENV", "development") == "development"
+    app.run(debug=debug, port=port)

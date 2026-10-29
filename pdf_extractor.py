@@ -8,6 +8,11 @@ import json
 import logging
 from typing import Dict, List, Any, Optional
 
+try:
+    import pdfplumber
+except ImportError:
+    pdfplumber = None
+
 logger = logging.getLogger("pdf_extractor")
 
 # Core Roman numeral mapping
@@ -170,21 +175,16 @@ class SyllabusPDFExtractor:
     Guarantees full page coverage, clean subject identification, and complete unit-topic extraction.
     """
     def __init__(self, gemini_api_key: Optional[str] = None):
-        self.api_key = gemini_api_key or os.getenv("GEMINI_API_KEY")
-        self.genai_client = None
-        if self.api_key and self.api_key != "your_gemini_api_key_here":
-            try:
-                from google import genai
-                self.genai_client = genai.Client(api_key=self.api_key)
-            except Exception as e:
-                logger.warning("Could not initialize google-genai: %s", e)
+        """Initialize the layout and table-aware syllabus extractor."""
+        pass
 
     def extract(self, pdf_file_path: str) -> Dict[str, Any]:
         """
         Main extraction entry point.
         Returns dictionary with 'subjects', 'metadata', and 'warnings'.
         """
-        import pdfplumber
+        if pdfplumber is None:
+            raise ImportError("pdfplumber is required for PDF extraction. Please install it via 'pip install pdfplumber'.")
 
         subjects_dict: Dict[str, Dict[str, Any]] = {}
         pages_processed = 0
@@ -193,6 +193,8 @@ class SyllabusPDFExtractor:
 
         with pdfplumber.open(pdf_file_path) as pdf:
             pages_processed = len(pdf.pages)
+            first_pages_text = " ".join(p.extract_text() or "" for p in pdf.pages[:5])
+            is_aktu = any(k in first_pages_text for k in CANONICAL_SUBJECT_MAP)
 
             for page_idx, page in enumerate(pdf.pages, start=1):
                 p_text = page.extract_text() or ""
@@ -215,13 +217,19 @@ class SyllabusPDFExtractor:
                     if is_evaluation_scheme_table(table):
                         continue
 
-                    # Scan table for course subject heading (e.g. BCS301, BCS402)
+                    # Scan table for course subject heading (e.g. BCS301, BCS402 or general course codes)
                     for row in table:
                         joined_row = " ".join([clean_text(c) for c in row if c])
                         code = extract_course_code(joined_row)
-                        if code and ("BCS" in code or "BCC" in code):
+                        is_match = False
+                        if is_aktu:
+                            is_match = bool(code and ("BCS" in code or "BCC" in code))
+                        else:
+                            is_match = bool(code and len(code) >= 3 and not re.search(r'\b(LAB|WORKSHOP|INTERNSHIP|PROJECT|UNIVERSITY|FACULTY|BOARD)\b', joined_row, re.IGNORECASE))
+
+                        if is_match and code:
                             # Filter out Lab / Workshop from core theory courses
-                            if not re.search(r'\b(LAB|WORKSHOP|INTERNSHIP|PROJECT)\b', joined_row, re.IGNORECASE):
+                            if not re.search(r'\b(LAB|WORKSHOP|INTERNSHIP|PROJECT|PRACTICAL)\b', joined_row, re.IGNORECASE):
                                 clean_title = clean_subject_name(joined_row, code)
                                 sem = CANONICAL_SUBJECT_MAP[code][1] if code in CANONICAL_SUBJECT_MAP else curr_semester
                                 
@@ -251,33 +259,42 @@ class SyllabusPDFExtractor:
                             continue
                         
                         c0 = clean_text(row[0])
-                        u_m = re.match(r'^(?:UNIT\s*)?([IVX]+|\d+)$', c0, re.IGNORECASE)
+                        u_m = re.match(r'^(?:UNIT|MODULE|SECTION|PART|CHAPTER)?\s*([IVX]+|\d+|[A-E])[:\-–.]?$', c0, re.IGNORECASE)
                         
                         if u_m and curr_subject:
                             u_str = u_m.group(1).upper()
-                            if u_str in ROMAN_TO_INT or u_str.isdigit():
-                                u_num = ROMAN_TO_INT.get(u_str, int(u_str) if u_str.isdigit() else 1)
-                                
-                                # Look for content cell
-                                content_cell = ""
-                                for c in row[1:]:
-                                    c_clean = clean_text(c)
-                                    if len(c_clean) > 15:
-                                        content_cell = c_clean
-                                        break
-                                
-                                if content_cell and not is_course_outcome_row([content_cell]):
-                                    target_subj = subjects_dict[curr_subject]
-                                    if u_num not in target_subj["units"]:
-                                        u_title_m = re.match(r'^([A-Za-z0-9\s/&–-]{3,40})[:\-–—]', content_cell)
-                                        u_title = u_title_m.group(1).strip() if u_title_m else f"Unit {u_num}"
-                                        target_subj["units"][u_num] = {
-                                            "unitNumber": u_num,
-                                            "unitTitle": u_title,
-                                            "rawContent": content_cell
-                                        }
-                                    else:
-                                        target_subj["units"][u_num]["rawContent"] += " " + content_cell
+                            if u_str in ROMAN_TO_INT:
+                                u_num = ROMAN_TO_INT[u_str]
+                            elif u_str.isdigit():
+                                u_num = int(u_str)
+                            elif len(u_str) == 1 and u_str.isalpha():
+                                u_num = ord(u_str) - ord('A') + 1
+                            else:
+                                u_num = 1
+
+                            if is_aktu and u_num > 5:
+                                continue
+
+                            # Look for content cell
+                            content_cell = ""
+                            for c in row[1:]:
+                                c_clean = clean_text(c)
+                                if len(c_clean) > 15:
+                                    content_cell = c_clean
+                                    break
+                            
+                            if content_cell and not is_course_outcome_row([content_cell]):
+                                target_subj = subjects_dict[curr_subject]
+                                if u_num not in target_subj["units"]:
+                                    u_title_m = re.match(r'^([A-Za-z0-9\s/&–-]{3,40})[:\-–—]', content_cell)
+                                    u_title = u_title_m.group(1).strip() if u_title_m else f"Unit {u_num}"
+                                    target_subj["units"][u_num] = {
+                                        "unitNumber": u_num,
+                                        "unitTitle": u_title,
+                                        "rawContent": content_cell
+                                    }
+                                else:
+                                    target_subj["units"][u_num]["rawContent"] += " " + content_cell
 
                         elif not c0 and curr_subject and row[1]:
                             # Row continuation without unit number (e.g. page 16 continued from page 15)
@@ -286,6 +303,13 @@ class SyllabusPDFExtractor:
                                 if subjects_dict[curr_subject]["units"]:
                                     latest_u = max(subjects_dict[curr_subject]["units"].keys())
                                     subjects_dict[curr_subject]["units"][latest_u]["rawContent"] += " " + cont_text
+
+        # Fallback to plain-text structure parsing if table extraction found no subjects or units
+        has_extracted_units = any(len(s.get("units", {})) > 0 for s in subjects_dict.values())
+        if not subjects_dict or not has_extracted_units:
+            text_subjects = self._extract_from_plain_text(pdf.pages)
+            if text_subjects:
+                subjects_dict = text_subjects
 
         # Process each subject's units into granular topics
         final_subjects = []
@@ -326,8 +350,13 @@ class SyllabusPDFExtractor:
                 "topics": flat_topics
             })
 
-        # Keep only subjects with detailed units
-        final_subjects = [s for s in final_subjects if len(s["units"]) >= 3]
+        # Keep only subjects with detailed units:
+        # Multi-course curriculum (e.g. AKTU) requires >= 3 units to avoid evaluation table fragments.
+        # Single or dual-course syllabus retains any course with units or topics.
+        if len(final_subjects) > 3:
+            final_subjects = [s for s in final_subjects if len(s["units"]) >= 3]
+        else:
+            final_subjects = [s for s in final_subjects if len(s["units"]) >= 1 or len(s["topics"]) >= 1]
 
         # Sort by semester then code
         final_subjects.sort(key=lambda s: (s.get("semester", 3), s.get("code", "")))
@@ -379,3 +408,94 @@ class SyllabusPDFExtractor:
             "warnings": warnings,
             "diagnostics": diagnostics
         }
+
+    def _extract_from_plain_text(self, pages: List[Any]) -> Dict[str, Dict[str, Any]]:
+        """
+        Resilient free-form text parser for syllabi without strict tables (e.g. CBSE, ICSE,
+        state boards, non-tabular college course syllabi).
+        """
+        subjects: Dict[str, Dict[str, Any]] = {}
+        full_text = "\n".join(p.extract_text() or "" for p in pages)
+        if not full_text.strip():
+            return subjects
+
+        # 1. Detect Subject Title and Code
+        subject_title = ""
+        subject_code = ""
+        for page in pages[:3]:
+            t = page.extract_text() or ""
+            # Regex match lines like "ENGLISH LANGUAGE AND LITERATURE Subject Code-184"
+            m = re.search(r'([A-Z\s/&–-]{4,50})\s+(?:Subject\s*Code|Course\s*Code|Code)[\s:\-–]*([A-Z0-9\-]+)', t, re.IGNORECASE)
+            if m:
+                subject_title = clean_subject_name(m.group(1).splitlines()[0])
+                subject_code = m.group(2).strip().upper()
+                break
+            for line in t.splitlines()[:6]:
+                l_strip = clean_text(line)
+                if len(l_strip) >= 5 and l_strip.isupper() and not re.search(r'\b(BOARD|CENTRAL|SYLLABUS|EXAM|CLASS|MARKS|WEIGHTAGE|SESSION)\b', l_strip):
+                    subject_title = clean_subject_name(l_strip)
+                    break
+            if subject_title:
+                break
+
+        if not subject_title:
+            subject_title = "Course Syllabus"
+        if not subject_code:
+            subject_code = "GEN101"
+
+        subj_key = subject_code
+        subjects[subj_key] = {
+            "code": subject_code,
+            "name": subject_title,
+            "title": subject_title,
+            "semester": 3,
+            "sourcePage": 1,
+            "units": {}
+        }
+
+        # 2. Extract Units / Sections / Modules
+        curr_u = 1
+        curr_u_title = "General Topics"
+
+        for page in pages:
+            lines = (page.extract_text() or "").splitlines()
+            for line in lines:
+                l_str = clean_text(line)
+                if not l_str:
+                    continue
+
+                # Section, Unit, Module, or Part header
+                sec_m = re.match(r'^(?:SECTION\s*([A-E])|UNIT\s*([IVX\d]+)|Module\s*(\d+)|Part\s*([IVX\d]+))[\s:\-–.]*(.*)', l_str, re.IGNORECASE)
+                if sec_m:
+                    ident = sec_m.group(1) or sec_m.group(2) or sec_m.group(3) or sec_m.group(4)
+                    u_title = sec_m.group(5).strip() if len(sec_m.groups()) >= 5 and sec_m.group(5) else f"Section {ident}"
+                    if not u_title:
+                        u_title = f"Section {ident}"
+                    u_num = ord(ident.upper()) - ord('A') + 1 if ident.isalpha() else (int(ident) if ident.isdigit() else curr_u + 1)
+                    curr_u = u_num
+                    curr_u_title = u_title
+                    if curr_u not in subjects[subj_key]["units"]:
+                        subjects[subj_key]["units"][curr_u] = {
+                            "unitNumber": curr_u,
+                            "unitTitle": curr_u_title,
+                            "rawContent": ""
+                        }
+                    continue
+
+                # Topic line (numbered bullet, dash, chapter title, or list item)
+                top_m = re.match(r'^(?:\d+[\.\)]|\([a-z\d]+\)|[•\-\*])\s*(.+)', l_str)
+                if top_m:
+                    topic_str = top_m.group(1).strip()
+                    if len(topic_str) > 3 and not re.search(r'\b(competencies|marks|weightage|hours|periods|maximum marks|guidelines)\b', topic_str, re.IGNORECASE):
+                        if curr_u not in subjects[subj_key]["units"]:
+                            subjects[subj_key]["units"][curr_u] = {
+                                "unitNumber": curr_u,
+                                "unitTitle": curr_u_title,
+                                "rawContent": ""
+                            }
+                        if subjects[subj_key]["units"][curr_u]["rawContent"]:
+                            subjects[subj_key]["units"][curr_u]["rawContent"] += ", " + topic_str
+                        else:
+                            subjects[subj_key]["units"][curr_u]["rawContent"] = topic_str
+
+        return subjects
