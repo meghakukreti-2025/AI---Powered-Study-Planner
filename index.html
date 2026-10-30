@@ -4,14 +4,25 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Cognify - AI-Powered Study Planner & Syllabus Progress Hub." />
+  <meta name="description" content="Cognify - AI-Powered Study Planner &amp; Syllabus Progress Hub." />
   <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;display=swap"
     rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
+  <!-- Inline theme bootstrap: prevents FOUC by reading localStorage before first paint -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('cognify_theme');
+        if (t === 'light' || t === 'dark') {
+          document.documentElement.setAttribute('data-theme', t);
+        }
+      } catch (e) {}
+    })();
+  </script>
 </head>
 
 <body>
@@ -23,13 +34,14 @@
         </div>
         <div>
           <h1 class="brand-title">Cognify</h1>
-          <p class="brand-subtitle">Smart Study Hub & AI Schedule Generator</p>
+          <p class="brand-subtitle">Smart Study Hub &amp; AI Schedule Generator</p>
         </div>
       </div>
 
       <div class="header-actions">
-        <button id="btn-prefill-demo" class="btn btn-outline btn-sm">⚡ Load Demo Data</button>
-        <button id="theme-toggle" class="theme-btn" aria-label="Toggle Theme">🌙</button>
+        <button id="btn-prefill-demo" class="btn btn-outline btn-sm">&#9889; Load Demo Data</button>
+        <button id="btn-logout" class="btn btn-outline btn-sm" style="display: none;">&#128682; Sign Out</button>
+        <button id="theme-toggle" class="theme-btn" aria-label="Toggle Theme">&#9728;&#65039;</button>
       </div>
     </div>
   </header>
@@ -37,7 +49,7 @@
   <main class="main-content">
     <div id="toast" class="toast hidden"></div>
 
-    <!-- VIEW 1: AUTHENTICATION (Centered Login Card with Rich Multi-Layer Mesh Gradient Background) -->
+    <!-- VIEW 1: AUTHENTICATION -->
     <section id="view-auth" class="view-panel active">
       <div class="auth-bg-ambient">
         <div class="mesh-orb orb-1"></div>
@@ -46,7 +58,7 @@
         <div class="mesh-orb orb-4"></div>
         <div class="mesh-texture"></div>
       </div>
-      
+
       <div class="auth-card-centered">
         <div class="auth-brand-center">
           <span class="auth-brand-icon">
@@ -77,6 +89,31 @@
                 <input type="text" id="auth-last-name" class="form-control" placeholder="e.g. Smith" />
               </div>
             </div>
+
+            <!-- Institution Category & Level -->
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="auth-institution-type">Academic Institution</label>
+                <select id="auth-institution-type" class="form-control">
+                  <option value="university" selected>University / College</option>
+                  <option value="school">School</option>
+                  <option value="course">Independent Course</option>
+                </select>
+              </div>
+              <div class="form-group flex-1">
+                <label for="auth-academic-level" id="label-academic-level">Academic Level</label>
+                <select id="auth-academic-level" class="form-control">
+                  <option value="Semester 1">Semester 1</option>
+                  <option value="Semester 2">Semester 2</option>
+                  <option value="Semester 3" selected>Semester 3</option>
+                  <option value="Semester 4">Semester 4</option>
+                  <option value="Semester 5">Semester 5</option>
+                  <option value="Semester 6">Semester 6</option>
+                  <option value="Semester 7">Semester 7</option>
+                  <option value="Semester 8">Semester 8</option>
+                </select>
+              </div>
+            </div>
           </div>
 
           <div class="form-group">
@@ -85,10 +122,18 @@
           </div>
 
           <div class="form-group">
-            <label for="auth-password">Password</label>
+            <label for="auth-password" id="label-auth-password">Password <span id="auth-password-hint" style="display: none; font-size: 11px; font-weight: normal; color: var(--text-muted);">(min 12 chars)</span></label>
             <div class="password-input-wrapper">
-              <input type="password" id="auth-password" class="form-control" placeholder="Enter your password" minlength="6" required autocomplete="current-password" />
-              <button type="button" id="btn-toggle-password" class="password-toggle-btn" aria-label="Toggle password visibility">👁️</button>
+              <input type="password" id="auth-password" class="form-control" placeholder="Enter your password" required autocomplete="current-password" />
+              <button type="button" id="btn-toggle-password" class="password-toggle-btn" aria-label="Toggle password visibility">&#128065;&#65039;</button>
+            </div>
+          </div>
+
+          <div class="form-group" id="group-confirm-password" style="display: none;">
+            <label for="auth-confirm-password">Confirm Password</label>
+            <div class="password-input-wrapper">
+              <input type="password" id="auth-confirm-password" class="form-control" placeholder="Re-enter password" autocomplete="new-password" />
+              <button type="button" id="btn-toggle-confirm-password" class="password-toggle-btn" aria-label="Toggle confirm password visibility">&#128065;&#65039;</button>
             </div>
           </div>
 
@@ -97,7 +142,11 @@
               <input type="checkbox" id="auth-remember-me" checked />
               <span>Remember Me</span>
             </label>
-            <a href="#" id="auth-guest-link" class="link-btn">Explore as Guest &rarr;</a>
+            <a href="#" id="auth-forgot-password-link" class="link-btn">Forgot Password?</a>
+          </div>
+
+          <div style="margin-bottom: 12px; text-align: right;">
+            <a href="#" id="auth-guest-link" class="link-btn" style="font-size: 13px;">Explore as Guest &rarr;</a>
           </div>
 
           <button type="submit" id="btn-auth-submit" class="btn btn-primary btn-block">Sign In</button>
@@ -107,7 +156,7 @@
           </div>
 
           <button type="button" id="btn-try-demo" class="btn btn-demo-account btn-block">
-            <span class="demo-btn-icon">⚡</span> Try Demo Account
+            <span class="demo-btn-icon">&#9889;</span> Try Demo Account
           </button>
 
           <div class="auth-switch-text text-center">
@@ -121,22 +170,31 @@
     <!-- VIEW 2: WELCOME DASHBOARD -->
     <section id="view-dashboard" class="view-panel">
       <div class="welcome-banner">
-        <div>
+        <div class="banner-greeting">
           <h2>
-            👋 Welcome Back, <span id="user-display-name">Student</span>
-            <button id="btn-edit-display-name" class="btn-icon" title="Edit your preferred display name" aria-label="Edit display name" style="font-size: 14px; cursor: pointer; background: transparent; border: none; vertical-align: middle;">✏️</button>!
-            <span id="demo-mode-badge" class="demo-badge-indicator" style="display: none;">⚡ Demo Mode</span>
+            &#128075; Welcome back, <span id="user-display-name">Student</span>!
+            <button id="btn-edit-display-name" class="btn-icon" title="Edit your preferred display name" aria-label="Edit display name" style="font-size: 14px; cursor: pointer; background: transparent; border: none; vertical-align: middle;">&#9999;&#65039;</button>
+            <span id="demo-mode-badge" class="demo-badge-indicator" style="display: none;">&#9889; Demo Mode</span>
           </h2>
-          <p id="dashboard-subtitle">Track course progress, organize unit study topics, or generate today's optimized study plan.</p>
+          <p id="dashboard-subtitle">Ready to make progress today?</p>
         </div>
-        <div class="banner-buttons">
+        <div class="banner-actions-row">
           <div id="demo-banner-actions" style="display: none; gap: 8px; align-items: center; flex-wrap: wrap;">
-            <button id="btn-reset-demo" class="btn btn-outline btn-sm" title="Reset demo curriculum and sample progress">🔄 Reset Demo</button>
-            <button id="btn-exit-demo" class="btn btn-outline btn-sm" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);" title="Exit demo mode">🚪 Exit Demo</button>
+            <button id="btn-reset-demo" class="btn btn-outline btn-sm" title="Reset demo curriculum and sample progress">&#128260; Reset Demo</button>
+            <button id="btn-exit-demo" class="btn btn-outline btn-sm" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);" title="Exit demo mode">&#128682; Exit Demo</button>
           </div>
-          <button id="btn-open-merge-modal" class="btn btn-outline btn-sm">🔀 Merge Duplicates</button>
-          <button id="btn-open-add-subject" class="btn btn-outline btn-sm">+ Add Subject / PDF</button>
-          <button id="btn-open-timetable-gen" class="btn btn-accent btn-sm">⚡ Generate Today's Timetable</button>
+          <button id="btn-open-merge-modal" class="btn btn-banner-secondary btn-sm">&#128256; Merge Duplicates</button>
+          <button id="btn-open-add-subject" class="btn btn-banner-secondary btn-sm">+ Add Subject / PDF</button>
+          <button id="btn-open-timetable-gen" class="btn btn-banner-primary btn-sm">&#9889; Generate Timetable</button>
+        </div>
+      </div>
+
+      <!-- SUBJECT SEARCH BAR -->
+      <div class="subject-search-bar">
+        <div class="subject-search-wrapper">
+          <span class="subject-search-icon">&#128269;</span>
+          <input type="text" id="subject-search-input" class="subject-search-input" placeholder="Search your subjects..." autocomplete="off" />
+          <button type="button" id="subject-search-clear" class="subject-search-clear" style="display:none;" aria-label="Clear search">&#10005;</button>
         </div>
       </div>
 
@@ -144,7 +202,7 @@
       <div class="dashboard-metrics-header">
         <div class="metrics-header-info">
           <h3 class="metrics-section-title">
-            <span>📊</span> Academic Progress
+            <span>&#128202;</span> Academic Progress
           </h3>
           <span class="metrics-section-subtitle" id="metrics-filter-caption">Filtered by Semester</span>
         </div>
@@ -154,7 +212,7 @@
             <select id="dashboard-semester-filter" class="semester-filter-select" aria-label="Filter progress statistics by semester">
               <option value="all">All Semesters</option>
             </select>
-            <span class="semester-filter-caret">▼</span>
+            <span class="semester-filter-caret">&#9660;</span>
           </div>
         </div>
       </div>
@@ -162,35 +220,35 @@
       <!-- DASHBOARD SUMMARY METRICS -->
       <div class="dashboard-metrics-grid">
         <div class="metric-card">
-          <div class="metric-icon-box">📚</div>
+          <div class="metric-icon-box">&#128218;</div>
           <div>
             <div class="metric-value" id="metric-total-subjects">0</div>
             <div class="metric-label">Subjects</div>
           </div>
         </div>
         <div class="metric-card">
-          <div class="metric-icon-box">📑</div>
+          <div class="metric-icon-box">&#128209;</div>
           <div>
             <div class="metric-value" id="metric-total-units">0</div>
             <div class="metric-label">Units</div>
           </div>
         </div>
         <div class="metric-card">
-          <div class="metric-icon-box">📝</div>
+          <div class="metric-icon-box">&#128221;</div>
           <div>
             <div class="metric-value" id="metric-total-topics">0</div>
             <div class="metric-label">Study Topics</div>
           </div>
         </div>
         <div class="metric-card">
-          <div class="metric-icon-box">✅</div>
+          <div class="metric-icon-box">&#9989;</div>
           <div>
             <div class="metric-value" id="metric-completed-topics">0</div>
             <div class="metric-label">Completed</div>
           </div>
         </div>
         <div class="metric-card progress-metric-card">
-          <div class="metric-icon-box">📈</div>
+          <div class="metric-icon-box">&#128200;</div>
           <div class="metric-details-col">
             <div class="metric-value" id="metric-progress-percent">0%</div>
             <div class="metric-label" id="metric-progress-label">Overall Progress</div>
@@ -218,11 +276,13 @@
       <div id="draft-resume-banner" class="draft-resume-banner" style="display: none;"></div>
 
       <div class="card pdf-upload-card" id="pdf-dropzone">
-        <div class="upload-icon">📄</div>
-        <h4 id="pdf-prompt-title">Drag & Drop Syllabus PDF Here</h4>
-        <p class="text-muted">Upload your multi-page university syllabus PDF (e.g. AKTU, VTU, Mumbai Univ)</p>
-        <button type="button" class="btn btn-primary btn-sm" style="margin-top: 10px;">Select PDF File</button>
-        <input type="file" id="pdf-file-input" accept="application/pdf" style="display: none;" />
+        <div class="upload-icon">&#128196;</div>
+        <h4 id="pdf-prompt-title">Drag &amp; Drop Syllabus PDF(s) Here</h4>
+        <p class="text-muted">Upload your syllabus</p>
+        <button type="button" id="btn-select-pdf-trigger" class="btn btn-primary btn-sm" style="margin-top: 10px;">Select PDF File(s)</button>
+        <input type="file" id="pdf-file-input" accept="application/pdf" multiple style="display: none;" />
+        <div id="pdf-selected-files-list" style="margin-top: 12px; display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 520px;"></div>
+        <button type="button" id="btn-start-multi-upload" class="btn btn-accent btn-sm" style="display: none; margin-top: 10px;">&#9889; Extract from Selected Files</button>
       </div>
 
       <div class="card">
@@ -259,8 +319,8 @@
             <div id="topic-inputs-container">
               <div class="topic-input-row">
                 <input type="text" class="topic-name-input form-control" placeholder="Topic title" required />
-                <label class="badge-label"><input type="checkbox" class="topic-focus-checkbox" /> 🔴 Weak</label>
-                <label class="badge-label"><input type="checkbox" class="topic-important-checkbox" /> ⭐ Imp</label>
+                <label class="badge-label"><input type="checkbox" class="topic-focus-checkbox" /> &#128308; Weak</label>
+                <label class="badge-label"><input type="checkbox" class="topic-important-checkbox" /> &#11088; Imp</label>
               </div>
             </div>
           </div>
@@ -277,7 +337,7 @@
           <p class="text-muted">Verify, edit, resolve duplicates, or save review draft before confirming into your hub.</p>
         </div>
         <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-          <button id="btn-save-draft" class="btn btn-outline btn-sm">💾 Save Draft</button>
+          <button id="btn-save-draft" class="btn btn-outline btn-sm">&#128190; Save Draft</button>
           <button id="btn-discard-review" class="btn btn-outline btn-sm">Discard</button>
           <button id="btn-confirm-review" class="btn btn-primary btn-sm">Confirm &amp; Save to Dashboard</button>
         </div>
@@ -285,8 +345,8 @@
 
       <!-- Mobile Tabs for Review Screen -->
       <div class="review-mobile-tabs">
-        <button type="button" class="btn btn-primary btn-sm" id="tab-review-syllabus">📝 Extracted Syllabus</button>
-        <button type="button" class="btn btn-outline btn-sm" id="tab-review-pdf">📄 Original PDF</button>
+        <button type="button" class="btn btn-primary btn-sm" id="tab-review-syllabus">&#128221; Extracted Syllabus</button>
+        <button type="button" class="btn btn-outline btn-sm" id="tab-review-pdf">&#128196; Original PDF</button>
       </div>
 
       <div class="review-split-layout">
@@ -294,7 +354,7 @@
         <div class="review-pdf-panel" id="panel-review-pdf">
           <div class="review-pdf-header">
             <h4 style="margin: 0; font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px;">
-              <span>📄</span> Original Syllabus PDF Preview
+              <span>&#128196;</span> Original Syllabus PDF Preview
             </h4>
             <span id="review-pdf-filename" style="font-size: 12.5px; color: var(--text-muted); font-weight: 600;">syllabus.pdf</span>
           </div>
@@ -350,15 +410,33 @@
           <div class="section-divider">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
               <div>
-                <h3 style="margin: 0; font-size: 18px; font-weight: 700;">1. Select Subjects & Topics for Today's Session</h3>
-                <p class="text-muted" style="margin: 4px 0 0 0; font-size: 13px;">Check a subject to reveal its units. Then select the specific topics you want to master today.</p>
+                <h3 style="margin: 0; font-size: 18px; font-weight: 700;">1. Select Subjects &amp; Topics for Today's Session</h3>
+                <p class="text-muted" style="margin: 4px 0 0 0; font-size: 13px;">Click a subject to expand its units, then select the topics you want to study today.</p>
               </div>
-              <div id="timetable-selection-summary" class="selection-summary-badge">0 subjects selected • 0 topics selected</div>
+              <div id="timetable-selection-summary" class="selection-summary-badge">0 subjects selected &bull; 0 topics selected</div>
             </div>
             <div id="today-topic-selector" class="topic-selector-box"></div>
           </div>
 
           <h3 style="margin-top: 24px;">2. Set Available Study Time</h3>
+          <div class="form-group" style="margin-bottom: 16px;">
+            <label style="font-weight: 600; display: block; margin-bottom: 8px;">Planning Horizon</label>
+            <div class="planning-mode-selector" style="display: flex; gap: 10px; flex-wrap: wrap;">
+              <label class="planning-mode-chip active">
+                <input type="radio" name="planning-mode" value="1" checked style="display: none;" />
+                <span>&#128197; Today (1 Day)</span>
+              </label>
+              <label class="planning-mode-chip">
+                <input type="radio" name="planning-mode" value="3" style="display: none;" />
+                <span>&#128197; Next 3 Days</span>
+              </label>
+              <label class="planning-mode-chip">
+                <input type="radio" name="planning-mode" value="7" style="display: none;" />
+                <span>&#128197; Next 7 Days</span>
+              </label>
+            </div>
+          </div>
+
           <div class="availability-grid">
             <div class="form-group flex-1">
               <label for="daily-hours">Total Available Hours</label>
@@ -374,19 +452,77 @@
             </div>
           </div>
 
+          <!-- Advanced Scheduling Settings Collapsible -->
+          <div class="advanced-scheduler-options" style="margin-top: 18px; border: 1px solid var(--border-color); border-radius: 8px; padding: 14px 18px; background: rgba(99, 102, 241, 0.03);">
+            <div id="btn-toggle-advanced-options" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 16px;">&#9881;</span>
+                <span style="font-weight: 600; font-size: 14px; color: var(--text-main);">Advanced Settings: Breaks &amp; Focus Hours</span>
+              </div>
+              <span id="advanced-options-chevron" style="font-size: 12px; color: var(--text-muted); transition: transform 0.2s ease;">&#9660;</span>
+            </div>
+            <div id="advanced-options-body" style="display: none; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-color);">
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px;">
+                <div class="form-group">
+                  <label for="break-preference" style="font-size: 13px; font-weight: 600;">Break Preference</label>
+                  <select id="break-preference" class="form-control" style="font-size: 13.5px; padding: 8px 12px;">
+                    <option value="short">Short Breaks (5 min)</option>
+                    <option value="medium" selected>Medium Breaks (10 min) - Recommended</option>
+                    <option value="long">Long Breaks (15 min)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="focus-preference" style="font-size: 13px; font-weight: 600;">Preferred High-Focus Hours</label>
+                  <select id="focus-preference" class="form-control" style="font-size: 13.5px; padding: 8px 12px;">
+                    <option value="balanced" selected>Balanced / Alternate Demanding Topics</option>
+                    <option value="early">Early (First Half of Session)</option>
+                    <option value="late">Late (Second Half of Session)</option>
+                  </select>
+                </div>
+              </div>
+              <div style="margin-top: 12px; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); background: rgba(99, 102, 241, 0.07); padding: 8px 12px; border-radius: 6px;">
+                <span>&#9889;</span>
+                <span><strong>Weighted Study Allocation:</strong> Weak topics get 1.5x time, Important topics get 1.3x, and both get 1.8x.</span>
+              </div>
+            </div>
+          </div>
+
           <div id="timetable-validation-msg" class="validation-error-msg" style="display: none;"></div>
 
           <button type="submit" id="btn-submit-timetable" class="btn btn-accent btn-block" style="margin-top: 24px;" disabled>
-            ⚡ Select Topics Above to Generate Timetable
+            &#9889; Select Topics Above to Generate Timetable
           </button>
         </form>
       </div>
 
       <div id="timetable-results-container" style="display: none; margin-top: 28px;">
-        <div class="content-header flex-between">
-          <h3>Your AI Optimized Schedule</h3>
-          <button id="btn-print-schedule" class="btn btn-outline btn-sm">Print / Save PDF</button>
+        <div class="content-header flex-between" style="flex-wrap: wrap; gap: 12px;">
+          <div>
+            <h3 style="margin: 0; font-size: 20px; font-weight: 700;">Your AI Optimized Study Schedule</h3>
+            <p id="timetable-overall-subtitle" class="text-muted" style="margin: 4px 0 0 0; font-size: 13px;">Review, customize session durations, reorder slots, or move topics between days.</p>
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+            <button id="btn-save-timetable" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 6px;">
+              <span>&#128190;</span> <span>Save Changes</span>
+            </button>
+            <button id="btn-edit-timetable" class="btn btn-accent btn-sm" style="display: flex; align-items: center; gap: 6px;">
+              <span>&#9999;&#65039;</span> <span id="edit-timetable-btn-text">Edit Timetable</span>
+            </button>
+            <button id="btn-reset-timetable" class="btn btn-outline btn-sm">Reset Edits</button>
+            <button id="btn-print-schedule" class="btn btn-outline btn-sm">Print / Save PDF</button>
+          </div>
         </div>
+
+        <!-- Multi-Day Navigation Tabs -->
+        <div id="timetable-day-tabs" class="timetable-day-tabs" style="display: flex; gap: 8px; margin-top: 18px; overflow-x: auto; padding-bottom: 6px;"></div>
+
+        <!-- Day Metrics Summary Banner -->
+        <div id="timetable-day-metrics" class="card" style="margin-top: 14px; padding: 12px 18px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; background: rgba(99, 102, 241, 0.04); border-left: 4px solid var(--primary);"></div>
+
+        <!-- Unscheduled Topics Alert Drawer -->
+        <div id="timetable-unscheduled-box" style="display: none; margin-top: 14px; padding: 14px 18px; border-radius: 8px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3);"></div>
+
+        <!-- Study Cards Wrapper for the active day -->
         <div id="timetable-cards-wrapper" style="display: grid; gap: 14px; margin-top: 14px;"></div>
       </div>
     </section>
@@ -396,7 +532,7 @@
       <div class="modal-card">
         <div class="modal-header">
           <div style="display: flex; align-items: center; gap: 12px;">
-            <span style="font-size: 26px;">🔀</span>
+            <span style="font-size: 26px;">&#128256;</span>
             <div>
               <h3 style="margin: 0; font-size: 20px; font-weight: 700;">Merge Duplicate Subjects</h3>
               <p class="text-muted" style="margin: 4px 0 0 0; font-size: 13.5px;">Consolidate matching subjects, combine unique units and topics, and preserve all completed/weak/important progress flags.</p>
@@ -412,12 +548,61 @@
       </div>
     </div>
 
+    <!-- MODAL: FORGOT / RESET PASSWORD -->
+    <div id="modal-forgot-password" class="modal-backdrop" style="display: none;">
+      <div class="modal-card" style="max-width: 440px;">
+        <div class="modal-header">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size: 24px;">&#128274;</span>
+            <div>
+              <h3 style="margin: 0; font-size: 19px; font-weight: 700;" id="forgot-modal-title">Reset Password</h3>
+              <p class="text-muted" style="margin: 3px 0 0 0; font-size: 13px;">Regain secure access to your Cognify account.</p>
+            </div>
+          </div>
+          <button type="button" class="modal-close-btn" id="btn-close-forgot-modal" aria-label="Close modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <!-- Step 1: Request Token -->
+          <form id="forgot-password-form">
+            <div class="form-group">
+              <label for="forgot-email">Account Email</label>
+              <input type="email" id="forgot-email" class="form-control" placeholder="name@college.edu" required />
+            </div>
+            <button type="submit" id="btn-request-reset" class="btn btn-primary btn-block">Generate Reset Token</button>
+          </form>
+
+          <!-- Step 2: Enter Token & New Password -->
+          <form id="reset-password-form" style="display: none; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border-color);">
+            <div class="form-group">
+              <label for="reset-token">Reset Token</label>
+              <input type="text" id="reset-token" class="form-control" placeholder="Paste 32-character token" required />
+            </div>
+            <div class="form-group">
+              <label for="reset-new-password">New Password <span style="font-size: 11px; color: var(--text-muted);">(min 12 chars)</span></label>
+              <div class="password-input-wrapper">
+                <input type="password" id="reset-new-password" class="form-control" placeholder="New password (min 12 chars)" minlength="12" required />
+                <button type="button" id="btn-toggle-reset-password" class="password-toggle-btn" aria-label="Toggle password visibility">&#128065;&#65039;</button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="reset-confirm-password">Confirm New Password</label>
+              <div class="password-input-wrapper">
+                <input type="password" id="reset-confirm-password" class="form-control" placeholder="Confirm new password" minlength="12" required />
+                <button type="button" id="btn-toggle-reset-confirm" class="password-toggle-btn" aria-label="Toggle confirm password visibility">&#128065;&#65039;</button>
+              </div>
+            </div>
+            <button type="submit" id="btn-submit-reset" class="btn btn-primary btn-block">Update Password</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
     <!-- MODAL: EDIT SUBJECT -->
     <div id="modal-edit-subject" class="modal-backdrop" style="display: none;">
       <div class="modal-card">
         <div class="modal-header">
           <div style="display: flex; align-items: center; gap: 12px;">
-            <span style="font-size: 26px;">✏️</span>
+            <span style="font-size: 26px;">&#9999;&#65039;</span>
             <div>
               <h3 style="margin: 0; font-size: 20px; font-weight: 700;">Edit Subject &amp; Syllabus</h3>
               <p class="text-muted" style="margin: 4px 0 0 0; font-size: 13.5px;">Modify subject title, course code, semester assignment, units, and topics.</p>

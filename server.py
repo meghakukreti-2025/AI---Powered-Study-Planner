@@ -3,6 +3,9 @@ import json
 import re
 import uuid
 import sqlite3
+import datetime
+import secrets
+from datetime import timedelta
 # pyrefly: ignore [missing-import]
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -105,6 +108,28 @@ def init_db():
     );
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS user_timetables (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        schedule_json TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    );
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS password_resets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        token TEXT UNIQUE NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        used INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    );
+    """)
+
     # Non-destructive migrations for subjects and topics
     cursor.execute("PRAGMA table_info(subjects)")
     subj_cols = [row["name"] for row in cursor.fetchall()]
@@ -114,6 +139,10 @@ def init_db():
         cursor.execute("ALTER TABLE subjects ADD COLUMN semester INTEGER DEFAULT 3")
     if "units_json" not in subj_cols:
         cursor.execute("ALTER TABLE subjects ADD COLUMN units_json TEXT DEFAULT ''")
+    if "institution_type" not in subj_cols:
+        cursor.execute("ALTER TABLE subjects ADD COLUMN institution_type TEXT DEFAULT 'university'")
+    if "term_label" not in subj_cols:
+        cursor.execute("ALTER TABLE subjects ADD COLUMN term_label TEXT DEFAULT 'Semester 3'")
     if "is_demo" not in subj_cols:
         cursor.execute("ALTER TABLE subjects ADD COLUMN is_demo INTEGER DEFAULT 0")
 
@@ -128,6 +157,10 @@ def init_db():
         cursor.execute("ALTER TABLE users ADD COLUMN display_name TEXT DEFAULT ''")
     if "is_demo" not in user_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN is_demo INTEGER DEFAULT 0")
+    if "institution_type" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN institution_type TEXT DEFAULT 'university'")
+    if "academic_level" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN academic_level TEXT DEFAULT 'Semester 3'")
     if "created_at" not in user_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
@@ -148,6 +181,8 @@ def init_db():
             cursor.execute(f"DELETE FROM topics WHERE subject_id IN (SELECT id FROM subjects WHERE user_id IN ({placeholders}))", old_demo_ids)
             cursor.execute(f"DELETE FROM subjects WHERE user_id IN ({placeholders})", old_demo_ids)
             cursor.execute(f"DELETE FROM syllabus_drafts WHERE user_id IN ({placeholders})", old_demo_ids)
+            cursor.execute(f"DELETE FROM user_timetables WHERE user_id IN ({placeholders})", old_demo_ids)
+            cursor.execute(f"DELETE FROM password_resets WHERE user_id IN ({placeholders})", old_demo_ids)
             cursor.execute(f"DELETE FROM users WHERE id IN ({placeholders})", old_demo_ids)
     except Exception:
         pass
@@ -199,7 +234,7 @@ def get_user_syllabus(user_id, conn=None):
         close_conn = True
 
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name, code, semester, units_json, is_demo FROM subjects WHERE user_id = ? ORDER BY id ASC", (user_id,))
+    cursor.execute("SELECT * FROM subjects WHERE user_id = ? ORDER BY id ASC", (user_id,))
     subj_rows = cursor.fetchall()
     subjects = []
 
@@ -234,6 +269,8 @@ def get_user_syllabus(user_id, conn=None):
             "title": s["name"],
             "code": s["code"] if "code" in s.keys() else "",
             "semester": s["semester"] if "semester" in s.keys() else 3,
+            "institutionType": s["institution_type"] if "institution_type" in s.keys() and s["institution_type"] else "university",
+            "termLabel": s["term_label"] if "term_label" in s.keys() and s["term_label"] else f"Semester {s['semester'] if 'semester' in s.keys() else 3}",
             "units": units,
             "topics": topics,
             "isDemo": bool(s["is_demo"]) if "is_demo" in s.keys() else False
@@ -277,8 +314,219 @@ def clean_first_name(email, provided_name=""):
     return "Student"
 
 
+# --- USER AUTHENTICATION & PROFILE ENDPOINTS ---
+def serialize_user(user_row):
+    """Safely serializes a user row into a client-facing JSON object without leaking password hash."""
+    if not user_row:
+        return None
+    keys = user_row.keys() if hasattr(user_row, "keys") else []
+    first_name = user_row["first_name"] if "first_name" in keys and user_row["first_name"] else clean_first_name(user_row["email"])
+    display_name = user_row["display_name"] if "display_name" in keys and user_row["display_name"] else first_name
+    institution_type = user_row["institution_type"] if "institution_type" in keys and user_row["institution_type"] else "university"
+    academic_level = user_row["academic_level"] if "academic_level" in keys and user_row["academic_level"] else "Semester 3"
+    is_demo = bool(user_row["is_demo"]) if "is_demo" in keys else False
+    return {
+        "id": user_row["id"],
+        "email": user_row["email"],
+        "firstName": first_name,
+        "lastName": user_row["last_name"] if "last_name" in keys and user_row["last_name"] else "",
+        "displayName": display_name,
+        "institutionType": institution_type,
+        "academicLevel": academic_level,
+        "isDemo": is_demo
+    }
+
 @app.route("/register", methods=["POST"])
 def register():
+    data = request.get_json() or {}
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "").strip()
+    confirm_password = data.get("confirmPassword", "").strip()
+    first_name = clean_first_name(email, data.get("firstName", ""))
+    last_name = data.get("lastName", "").strip()
+    institution_type = data.get("institutionType", "university").strip().lower()
+    if institution_type not in ["university", "school", "course"]:
+        institution_type = "university"
+    academic_level = data.get("academicLevel", "").strip()
+    if not academic_level:
+        academic_level = "Semester 1" if institution_type == "university" else ("Class 10" if institution_type == "school" else "Course 1")
+
+    if not email:
+        return jsonify({"success": False, "message": "Email is required."}), 400
+    if not password:
+        return jsonify({"success": False, "message": "Password is required."}), 400
+    if len(password) < 12:
+        return jsonify({"success": False, "message": "Password must be at least 12 characters long."}), 400
+    if confirm_password and password != confirm_password:
+        return jsonify({"success": False, "message": "Passwords do not match."}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
+    if cursor.fetchone():
+        conn.close()
+        return jsonify({"success": False, "message": "Email already registered. Please sign in."}), 400
+
+    pwd_hash = generate_password_hash(password)
+    cursor.execute(
+        "INSERT INTO users (email, password_hash, first_name, last_name, display_name, institution_type, academic_level) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (email, pwd_hash, first_name, last_name, first_name, institution_type, academic_level)
+    )
+    user_id = cursor.lastrowid
+    conn.commit()
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    user_row = cursor.fetchone()
+    user_obj = serialize_user(user_row)
+    conn.close()
+    return jsonify({"success": True, "user": user_obj, "subjects": []}), 201
+
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.get_json() or {}
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "").strip()
+    
+    if not email:
+        return jsonify({"success": False, "message": "Email is required."}), 400
+    if not password:
+        return jsonify({"success": False, "message": "Password is required."}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
+    user_row = cursor.fetchone()
+
+    # Generic error message to prevent user enumeration; strictly do not auto-create on failed login
+    if not user_row or not user_row["password_hash"]:
+        conn.close()
+        return jsonify({"success": False, "message": "Invalid email or password."}), 401
+
+    if not check_password_hash(user_row["password_hash"], password):
+        conn.close()
+        return jsonify({"success": False, "message": "Invalid email or password."}), 401
+
+    user_obj = serialize_user(user_row)
+    subjects = get_user_syllabus(user_row["id"], conn)
+    conn.close()
+    return jsonify({"success": True, "user": user_obj, "subjects": subjects}), 200
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    return jsonify({"success": True, "message": "Logged out successfully."}), 200
+
+
+@app.route("/forgot-password", methods=["POST"])
+def forgot_password():
+    data = request.get_json() or {}
+    email = data.get("email", "").strip().lower()
+    if not email:
+        return jsonify({"success": False, "message": "Email is required."}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
+    user_row = cursor.fetchone()
+    if not user_row:
+        conn.close()
+        return jsonify({
+            "success": True,
+            "message": "If an account exists with this email, password reset instructions have been generated."
+        }), 200
+
+    user_id = user_row["id"]
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.datetime.utcnow() + timedelta(hours=1)
+    cursor.execute(
+        "INSERT INTO password_resets (user_id, token, expires_at, used) VALUES (?, ?, ?, 0)",
+        (user_id, token, expires_at)
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "success": True,
+        "message": "Password reset token generated. In a production environment, this link would be emailed.",
+        "resetToken": token
+    }), 200
+
+
+@app.route("/reset-password", methods=["POST"])
+def reset_password():
+    data = request.get_json() or {}
+    token = data.get("token", "").strip()
+    new_password = data.get("newPassword", "").strip()
+    confirm_password = data.get("confirmPassword", "").strip()
+
+    if not token:
+        return jsonify({"success": False, "message": "Reset token is required."}), 400
+    if not new_password:
+        return jsonify({"success": False, "message": "New password is required."}), 400
+    if len(new_password) < 12:
+        return jsonify({"success": False, "message": "Password must be at least 12 characters long."}), 400
+    if confirm_password and new_password != confirm_password:
+        return jsonify({"success": False, "message": "Passwords do not match."}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM password_resets WHERE token = ? AND used = 0", (token,))
+    reset_row = cursor.fetchone()
+    if not reset_row:
+        conn.close()
+        return jsonify({"success": False, "message": "Invalid or expired reset token."}), 400
+
+    expires_at_str = reset_row["expires_at"]
+    try:
+        if isinstance(expires_at_str, str):
+            expires_at = datetime.datetime.fromisoformat(expires_at_str.replace(" ", "T"))
+        else:
+            expires_at = expires_at_str
+        if datetime.datetime.utcnow() > expires_at:
+            conn.close()
+            return jsonify({"success": False, "message": "Reset token has expired. Please request a new one."}), 400
+    except Exception:
+        pass
+
+    user_id = reset_row["user_id"]
+    pwd_hash = generate_password_hash(new_password)
+    cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (pwd_hash, user_id))
+    cursor.execute("UPDATE password_resets SET used = 1 WHERE id = ?", (reset_row["id"],))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"success": True, "message": "Password has been reset successfully. You can now log in."}), 200
+
+
+@app.route("/update-academic-profile", methods=["POST"])
+def update_academic_profile():
+    data = request.get_json() or {}
+    user_id = data.get("userId")
+    institution_type = data.get("institutionType", "university").strip().lower()
+    academic_level = data.get("academicLevel", "").strip()
+
+    if not user_id:
+        return jsonify({"success": False, "message": "User ID is required."}), 400
+    if institution_type not in ["university", "school", "course"]:
+        institution_type = "university"
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE users SET institution_type = ?, academic_level = ? WHERE id = ?",
+        (institution_type, academic_level, user_id)
+    )
+    conn.commit()
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    user_row = cursor.fetchone()
+    conn.close()
+
+    if not user_row:
+        return jsonify({"success": False, "message": "User not found."}), 404
+
+    return jsonify({"success": True, "user": serialize_user(user_row)}), 200
+
+"""
+DEPRECATED DUPLICATE REGISTRATION AND LOGIN (SUPERSEDED ABOVE)
     data = request.get_json() or {}
     email = data.get("email", "").strip().lower()
     password = data.get("password", "").strip()
@@ -375,6 +623,7 @@ def login():
     return jsonify({"success": True, "user": user_obj, "subjects": subjects}), 200
 
 
+"""
 @app.route("/update-profile", methods=["POST"])
 def update_profile():
     data = request.get_json() or {}
@@ -442,6 +691,8 @@ def demo_login():
             "lastName": "Visitor",
             "displayName": display_name,
             "isDemo": True,
+            "institutionType": "university",
+            "academicLevel": "Semester 3",
             "demoToken": demo_uuid
         }
         subjects = get_user_syllabus(user_id, conn)
@@ -670,10 +921,12 @@ def save_syllabus():
             s_sem = int(sub.get("semester", 3))
             units_data = sub.get("units", [])
             units_json_str = json.dumps(units_data) if units_data else ""
+            s_inst = sub.get("institutionType") or sub.get("institution_type") or "university"
+            s_term = sub.get("termLabel") or sub.get("term_label") or (f"Class {sub.get('classLevel', s_sem)}" if s_inst == "school" else (f"Course {s_code or s_name}" if s_inst == "course" else f"Semester {s_sem}"))
 
             cursor.execute(
-                "INSERT INTO subjects (user_id, name, code, semester, units_json) VALUES (?, ?, ?, ?, ?)",
-                (user_id, s_name, s_code, s_sem, units_json_str)
+                "INSERT INTO subjects (user_id, name, code, semester, units_json, institution_type, term_label) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_id, s_name, s_code, s_sem, units_json_str, s_inst, s_term)
             )
             new_subj_id = cursor.lastrowid
 
@@ -1153,6 +1406,8 @@ def edit_subject_endpoint():
     semester = data.get("semester") or 3
     units = data.get("units") or []
     topics = data.get("topics") or []
+    institution_type = data.get("institutionType") or data.get("institution_type") or "university"
+    term_label = data.get("termLabel") or data.get("term_label") or (f"Class {semester}" if institution_type == "school" else (f"Course {code or name}" if institution_type == "course" else f"Semester {semester}"))
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1191,8 +1446,8 @@ def edit_subject_endpoint():
 
         # Update subject metadata
         cursor.execute(
-            "UPDATE subjects SET name = ?, code = ?, semester = ?, units_json = ? WHERE id = ?",
-            (name, code, int(semester), json.dumps(units) if units else "", s_id)
+            "UPDATE subjects SET name = ?, code = ?, semester = ?, units_json = ?, institution_type = ?, term_label = ? WHERE id = ?",
+            (name, code, int(semester), json.dumps(units) if units else "", institution_type, term_label, s_id)
         )
 
         flat_topics = []
@@ -1947,48 +2202,85 @@ def extract_with_gemini(cleaned_text="", pdf_path=""):
     return extracted
 
 
+
+def clean_subject_name(name):
+    """
+    Normalizes subject name for deduplication and matching by stripping leading
+    course code prefixes, subject numbering, and extra punctuation/whitespace.
+    """
+    if not name:
+        return ""
+    cleaned = re.sub(r'^(?:subject\s*\d+\s*[:\-–—]\s*|[A-Z]{2,4}\s*\d{2,4}\s*[:\-–—]\s*)', '', str(name).strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned or str(name).strip()
+
+
 @app.route('/upload-syllabus-pdf', methods=['POST'])
 def upload_syllabus_pdf():
     """
     Multi-stage layout and table-aware PDF syllabus extraction endpoint.
-    Extracts all core theory subjects, units I-V, and granular study topics without course outcomes.
+    Supports uploading up to 3 PDFs simultaneously, processing each independently,
+    tagging subjects with their source files, detecting duplicate subjects across files,
+    and returning a unified extraction draft for review.
     """
-    if 'file' not in request.files:
-        return jsonify({"error": "No file uploaded", "success": False}), 400
-    file = request.files['file']
-    if not file.filename or not file.filename.lower().endswith('.pdf'):
-        return jsonify({"error": "File must be a valid PDF document", "success": False}), 400
+    files = request.files.getlist('files')
+    if not files and 'file' in request.files:
+        files = [request.files['file']]
+    if not files:
+        return jsonify({"error": "No PDF file uploaded", "success": False}), 400
+    if len(files) > 3:
+        return jsonify({"error": "A maximum of 3 PDF files can be uploaded simultaneously.", "success": False}), 400
+
+    valid_files = [f for f in files if f.filename and f.filename.lower().endswith('.pdf')]
+    if not valid_files:
+        return jsonify({"error": "All uploaded files must be valid PDF documents.", "success": False}), 400
 
     import tempfile
-    temp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            file.save(tmp.name)
-            temp_path = tmp.name
+    import shutil
+    from pdf_extractor import SyllabusPDFExtractor
 
-        import shutil
-        latest_pdf_path = os.path.join(UPLOADS_DIR, "latest_syllabus.pdf")
+    extractor = SyllabusPDFExtractor()
+    combined_subjects = []
+    subject_lookup = {}
+    duplicates_detected = []
+    all_warnings = []
+    file_summaries = []
+    total_pages = 0
+    pdf_url = ""
+
+    for f_idx, file in enumerate(valid_files):
+        temp_path = None
         try:
-            shutil.copyfile(temp_path, latest_pdf_path)
-            pdf_url = "/uploads/latest_syllabus.pdf"
-        except Exception:
-            pdf_url = ""
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                file.save(tmp.name)
+                temp_path = tmp.name
 
-        from pdf_extractor import SyllabusPDFExtractor
-        extractor = SyllabusPDFExtractor()
-        result = extractor.extract(temp_path)
+            # Save the primary PDF for side-by-side preview
+            if f_idx == 0:
+                latest_pdf_path = os.path.join(UPLOADS_DIR, "latest_syllabus.pdf")
+                try:
+                    shutil.copyfile(temp_path, latest_pdf_path)
+                    pdf_url = "/uploads/latest_syllabus.pdf"
+                except Exception:
+                    pdf_url = ""
 
-        if not result.get("subjects"):
-            # Attempt Gemini fallback extraction if available
-            api_key = os.getenv("GEMINI_API_KEY")
-            if GENAI_AVAILABLE and api_key and api_key != "your_gemini_api_key_here":
-                sanitized_text = sanitize_syllabus_text(temp_path)
-                gemini_subjects = extract_with_gemini(cleaned_text=sanitized_text, pdf_path=temp_path)
-                if gemini_subjects:
+            result = extractor.extract(temp_path)
+            f_subjects = result.get("subjects", [])
+            f_pages = result.get("pagesProcessed", 0)
+            total_pages += f_pages
+
+            if result.get("warnings"):
+                all_warnings.extend([f"[{file.filename}] {w}" for w in result["warnings"]])
+
+            # If plain extraction returned no subjects, attempt Gemini fallback if key is present
+            if not f_subjects:
+                api_key = os.getenv("GEMINI_API_KEY")
+                if GENAI_AVAILABLE and api_key and api_key != "your_gemini_api_key_here":
+                    sanitized_text = sanitize_syllabus_text(temp_path)
+                    gemini_subs = extract_with_gemini(cleaned_text=sanitized_text, pdf_path=temp_path)
+                    if gemini_subs:
                         formatted_subs = []
-                        total_topics = 0
-                        total_units = 0
-                        for idx, s in enumerate(gemini_subjects):
+                        for idx, s in enumerate(gemini_subs):
                             s_name = s.get("subject") or s.get("name") or f"Subject {idx + 1}"
                             s_topics_raw = s.get("topics", [])
                             formatted_topics = []
@@ -1997,59 +2289,363 @@ def upload_syllabus_pdf():
                                     formatted_topics.append({"name": t.strip(), "needsFocus": False, "isImportant": False, "completed": False})
                                 elif isinstance(t, dict):
                                     formatted_topics.append({"name": t.get("name", "").strip(), "needsFocus": bool(t.get("needsFocus", False)), "isImportant": bool(t.get("isImportant", False)), "completed": bool(t.get("completed", False))})
-                            total_topics += len(formatted_topics)
-                            u_list = s.get("units", [])
-                            total_units += len(u_list) if u_list else 1
                             formatted_subs.append({
                                 "name": s_name,
                                 "title": s_name,
                                 "code": s.get("code", ""),
-                                "semester": s.get("semester", 3),
+                                "semester": s.get("semester", 1),
                                 "topics": formatted_topics,
-                                "units": u_list
+                                "units": s.get("units", [])
                             })
-                        if formatted_subs:
-                            result = {
-                                "subjects": formatted_subs,
-                                "subjectCount": len(formatted_subs),
-                                "totalUnits": total_units,
-                                "totalTopics": total_topics,
-                                "pagesProcessed": result.get("pagesProcessed", 0),
-                                "warnings": ["Extracted using Gemini AI fallback"],
-                                "diagnostics": {"engine": "gemini_fallback"}
-                            }
+                        f_subjects = formatted_subs
 
-        if not result.get("subjects"):
-            return jsonify({
-                "error": "No course subjects with units could be identified from the uploaded PDF.",
-                "success": False
-            }), 422
+            # Tag each subject with source file and merge
+            for s in f_subjects:
+                s["sourceFile"] = file.filename
+                subj_key = (s.get("code") or clean_subject_name(s.get("name") or "")).strip().upper()
+                
+                if subj_key in subject_lookup:
+                    existing = subject_lookup[subj_key]
+                    duplicates_detected.append({
+                        "name": s.get("name"),
+                        "code": s.get("code"),
+                        "existingFile": existing.get("sourceFile", ""),
+                        "newFile": file.filename,
+                        "conflict": True
+                    })
+                    s["hasDuplicateIn"] = existing.get("sourceFile", "")
+                    s["duplicateOf"] = subj_key
+                else:
+                    subject_lookup[subj_key] = s
+                
+                combined_subjects.append(s)
 
+            file_summaries.append({
+                "filename": file.filename,
+                "pages": f_pages,
+                "subjectsDetected": len(f_subjects)
+            })
+
+        except Exception as exc:
+            app.logger.warning("Error processing %s: %s", file.filename, exc)
+            all_warnings.append(f"Failed to process '{file.filename}': {str(exc)}")
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
+    if not combined_subjects:
         return jsonify({
-            "success": True,
-            "pdfUrl": pdf_url,
-            "filename": file.filename,
-            "subjects": result["subjects"],
-            "subjectCount": result["subjectCount"],
-            "totalUnits": result.get("totalUnits", 0),
-            "totalTopics": result.get("totalTopics", 0),
-            "pagesProcessed": result.get("pagesProcessed", 0),
-            "warnings": result.get("warnings", []),
-            "diagnostics": result.get("diagnostics", {})
-        }), 200
+            "error": "No course subjects with units could be identified from the uploaded PDF document(s).",
+            "success": False
+        }), 422
 
-    except Exception as exc:
-        app.logger.exception("Syllabus Extraction Error")
-        return jsonify({"error": f"Failed to extract syllabus: {str(exc)}", "success": False}), 500
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except Exception:
-                pass
+    total_units = sum(len(s.get("units", [])) for s in combined_subjects)
+    total_topics = sum(len(s.get("topics", [])) for s in combined_subjects)
+
+    return jsonify({
+        "success": True,
+        "pdfUrl": pdf_url,
+        "filename": ", ".join(f.filename for f in valid_files),
+        "filenames": [f.filename for f in valid_files],
+        "subjects": combined_subjects,
+        "subjectCount": len(combined_subjects),
+        "totalUnits": total_units,
+        "totalTopics": total_topics,
+        "pagesProcessed": total_pages,
+        "warnings": all_warnings,
+        "diagnostics": {
+            "filesProcessed": len(valid_files),
+            "fileSummaries": file_summaries,
+            "duplicateSubjectsDetected": duplicates_detected
+        }
+    }), 200
 
 
-def generate_local_schedule(subjects, available_hours, start_time, end_time):
+
+def calculate_topic_weight(topic):
+    """
+    Weighted time allocation:
+    - Normal topic: 1.0
+    - Important topic: 1.3
+    - Weak topic: 1.5
+    - Both weak and important: 1.8
+    """
+    needs_focus = bool(topic.get("needsFocus", False))
+    is_imp = bool(topic.get("isImportant", False))
+    if needs_focus and is_imp:
+        return 1.8
+    elif needs_focus:
+        return 1.5
+    elif is_imp:
+        return 1.3
+    return 1.0
+
+
+def order_topics_smartly(items, focus_preference="balanced"):
+    """
+    Orders topics based on user focus preference:
+    - 'early': high-weight topics in first half
+    - 'late': high-weight topics in second half
+    - 'balanced': alternates demanding and lighter topics to avoid cognitive overload
+    """
+    demanding = [x for x in items if x["weight"] > 1.0]
+    lighter = [x for x in items if x["weight"] <= 1.0]
+
+    # Sort demanding by highest weight first (1.8, 1.5, 1.3)
+    demanding.sort(key=lambda x: x["weight"], reverse=True)
+
+    if focus_preference == "early":
+        return demanding + lighter
+    elif focus_preference == "late":
+        return lighter + demanding
+    else:
+        # Balanced: Interleave demanding and lighter topics
+        result = []
+        d_idx, l_idx = 0, 0
+        while d_idx < len(demanding) or l_idx < len(lighter):
+            if d_idx < len(demanding):
+                result.append(demanding[d_idx])
+                d_idx += 1
+            if l_idx < len(lighter):
+                result.append(lighter[l_idx])
+                l_idx += 1
+        return result
+
+
+def parse_time_to_minutes(time_str, default_mins):
+    try:
+        parts = str(time_str).strip().split(":")
+        return (int(parts[0]) * 60 + int(parts[1])) % 1440
+    except Exception:
+        return default_mins
+
+
+def build_advanced_schedule(subjects, available_hours=3.5, start_time="18:00", end_time="22:30",
+                            planning_mode="1", break_preference="medium", focus_preference="balanced"):
+    """
+    Multi-Day Weighted AI Timetable Generator:
+    - Planning Modes: '1' (Today), '3' (Next 3 Days), '7' (Next 7 Days)
+    - Break Preference: 'short' (5m), 'medium' (10m), 'long' (15m)
+    - Weighted allocation: Normal 1.0, Imp 1.3, Weak 1.5, Weak+Imp 1.8
+    - Minimum study session duration: 25 mins to avoid impractically short sessions
+    - Maximum study session duration: 75 mins
+    - Distributes topics across selected number of days without duplicate scheduling
+    - Detects unscheduled topics that exceed study window capacity
+    """
+    try:
+        days_count = int(planning_mode)
+    except Exception:
+        days_count = 1
+    if days_count not in (1, 3, 7):
+        days_count = 1
+
+    break_map = {"short": 5, "medium": 10, "long": 15}
+    break_mins = break_map.get(str(break_preference).lower(), 10)
+
+    start_mins = parse_time_to_minutes(start_time, 18 * 60)
+    end_mins = parse_time_to_minutes(end_time, 22 * 60 + 30)
+
+    diff = (end_mins + 1440 - start_mins) % 1440 if end_mins <= start_mins else (end_mins - start_mins)
+    if diff <= 0:
+        diff = 240
+    max_mins_by_hours = int(float(available_hours or 3.5) * 60)
+    daily_capacity_mins = min(diff, max_mins_by_hours)
+
+    candidate_topics = []
+    for sub in subjects:
+        s_name = sub.get("name", "Study Session").strip() if isinstance(sub, dict) else str(sub)
+        sub_topics = sub.get("topics", []) if isinstance(sub, dict) else []
+        for top in sub_topics:
+            if isinstance(top, dict):
+                t_name = top.get("name", "").strip()
+                needs_focus = bool(top.get("needsFocus", False))
+                is_imp = bool(top.get("isImportant", False))
+                completed = bool(top.get("completed", False))
+            else:
+                t_name = str(top).strip()
+                needs_focus = False
+                is_imp = False
+                completed = False
+
+            if not t_name or completed:
+                continue
+
+            item = {
+                "subject": s_name,
+                "topic": t_name,
+                "needsFocus": needs_focus,
+                "isImportant": is_imp,
+                "weight": calculate_topic_weight({"needsFocus": needs_focus, "isImportant": is_imp})
+            }
+            candidate_topics.append(item)
+
+    if not candidate_topics:
+        candidate_topics.append({
+            "subject": "Core Review",
+            "topic": "Comprehensive Concept Review & Practice Problems",
+            "needsFocus": False,
+            "isImportant": True,
+            "weight": 1.3
+        })
+
+    ordered_topics = order_topics_smartly(candidate_topics, focus_preference)
+
+    MIN_SESSION_MINS = 25
+    MAX_SESSION_MINS = 75
+
+    max_topics_per_day = max(1, (daily_capacity_mins + break_mins) // (MIN_SESSION_MINS + break_mins))
+    days_topics = [[] for _ in range(days_count)]
+    unscheduled = []
+
+    total_capacity_topics = days_count * max_topics_per_day
+
+    for idx, top in enumerate(ordered_topics):
+        if idx < total_capacity_topics:
+            target_day = min(range(days_count), key=lambda d: len(days_topics[d]))
+            days_topics[target_day].append(top)
+        else:
+            unscheduled.append({
+                "subject": top["subject"],
+                "topic": top["topic"],
+                "needsFocus": top["needsFocus"],
+                "isImportant": top["isImportant"],
+                "reason": f"Exceeded available study hours across {days_count} day(s) (Maximum {total_capacity_topics} topics can fit)."
+            })
+
+    today_date = datetime.date.today()
+    schedule_days = []
+
+    for d in range(days_count):
+        day_date = today_date + datetime.timedelta(days=d)
+        date_str = day_date.strftime("%Y-%m-%d")
+
+        if days_count == 1:
+            day_label = "Today"
+        elif d == 0:
+            day_label = "Day 1 (Today)"
+        elif d == 1:
+            day_label = f"Day 2 - Tomorrow ({day_date.strftime('%b %d')})"
+        else:
+            day_label = f"Day {d + 1} ({day_date.strftime('%b %d')})"
+
+        d_topics = days_topics[d]
+        if not d_topics:
+            schedule_days.append({
+                "day": day_label,
+                "date": date_str,
+                "dayIndex": d,
+                "slots": [],
+                "totalStudyMins": 0,
+                "totalBreakMins": 0,
+                "topicCount": 0
+            })
+            continue
+
+        session_count = len(d_topics)
+        total_breaks_time = (session_count - 1) * break_mins
+        net_study_time = max(MIN_SESSION_MINS * session_count, daily_capacity_mins - total_breaks_time)
+        sum_weights = sum(t["weight"] for t in d_topics) or 1.0
+
+        durations = []
+        for t in d_topics:
+            raw_d = int(round((t["weight"] / sum_weights) * net_study_time))
+            durations.append(max(MIN_SESSION_MINS, min(MAX_SESSION_MINS, raw_d)))
+
+        target_sum = daily_capacity_mins - total_breaks_time
+        current_sum = sum(durations)
+        diff_mins = target_sum - current_sum
+
+        if diff_mins != 0 and durations:
+            adj_idx = max(range(len(durations)), key=lambda i: durations[i])
+            durations[adj_idx] = max(MIN_SESSION_MINS, durations[adj_idx] + diff_mins)
+
+        slots = []
+        curr_time = start_mins
+        study_accum = 0
+        break_accum = 0
+
+        for i, t in enumerate(d_topics):
+            dur = durations[i]
+            next_time = curr_time + dur
+            s_h, s_m = divmod(curr_time % 1440, 60)
+            e_h, e_m = divmod(next_time % 1440, 60)
+            slot_id = f"slot_d{d}_s{i}_{uuid.uuid4().hex[:6]}"
+
+            slots.append({
+                "id": slot_id,
+                "time": f"{s_h:02d}:{s_m:02d} - {e_h:02d}:{e_m:02d}",
+                "startTime": f"{s_h:02d}:{s_m:02d}",
+                "endTime": f"{e_h:02d}:{e_m:02d}",
+                "durationMins": dur,
+                "subject": t["subject"],
+                "topic": t["topic"],
+                "type": "study",
+                "needsFocus": t["needsFocus"],
+                "isImportant": t["isImportant"],
+                "status": "pending",
+                "dayIndex": d
+            })
+            study_accum += dur
+            curr_time = next_time
+
+            if i < session_count - 1 and break_mins > 0:
+                b_end = curr_time + break_mins
+                b_sh, b_sm = divmod(curr_time % 1440, 60)
+                b_eh, b_em = divmod(b_end % 1440, 60)
+                break_id = f"break_d{d}_b{i}_{uuid.uuid4().hex[:6]}"
+
+                slots.append({
+                    "id": break_id,
+                    "time": f"{b_sh:02d}:{b_sm:02d} - {b_eh:02d}:{b_em:02d}",
+                    "startTime": f"{b_sh:02d}:{b_sm:02d}",
+                    "endTime": f"{b_eh:02d}:{b_em:02d}",
+                    "durationMins": break_mins,
+                    "subject": "Refresh Break",
+                    "topic": "Hydrate, stretch, or rest your eyes for optimal focus",
+                    "type": "break",
+                    "needsFocus": False,
+                    "isImportant": False,
+                    "status": "pending",
+                    "dayIndex": d
+                })
+                break_accum += break_mins
+                curr_time = b_end
+
+        schedule_days.append({
+            "day": day_label,
+            "date": date_str,
+            "dayIndex": d,
+            "slots": slots,
+            "totalStudyMins": study_accum,
+            "totalBreakMins": break_accum,
+            "topicCount": len(d_topics)
+        })
+
+    return {
+        "schedule": schedule_days,
+        "unscheduled": unscheduled
+    }
+
+
+def generate_local_schedule(subjects, available_hours=3.5, start_time="18:00", end_time="22:30", planning_mode="1", break_preference="medium", focus_preference="balanced"):
+    result = build_advanced_schedule(
+        subjects=subjects,
+        available_hours=available_hours,
+        start_time=start_time,
+        end_time=end_time,
+        planning_mode=planning_mode,
+        break_preference=break_preference,
+        focus_preference=focus_preference
+    )
+    if result.get("schedule") and len(result["schedule"]) > 0:
+        return result["schedule"][0]
+    return {"day": "Today", "slots": []}
+
+
+def _deprecated_generate_local_schedule(subjects, available_hours, start_time, end_time):
     """
     Deterministic schedule generator:
     1. Allocates ~60% study time to weak (needsFocus) or important topics and ~40% to normal topics.
@@ -2179,12 +2775,15 @@ def generate_schedule():
     subjects = data.get("subjects", [])
     available_hours = data.get("availableHours", 3)
     start_time = data.get("startTime", "18:00")
-    end_time = data.get("endTime", "23:00")
+    end_time = data.get("endTime", "22:30")
+    planning_mode = str(data.get("planningMode", "1"))
+    break_preference = data.get("breakPreference", "medium")
+    focus_preference = data.get("focusPreference", "balanced")
 
     api_key = os.getenv("GEMINI_API_KEY")
-    if GENAI_AVAILABLE and api_key and api_key != "your_gemini_api_key_here" and subjects:
+    if planning_mode == "1" and GENAI_AVAILABLE and api_key and api_key != "your_gemini_api_key_here" and subjects:
         try:
-            http_opts = types.HttpOptions(timeout=10000) if hasattr(types, "HttpOptions") else None
+            http_opts = types.HttpOptions(timeout=3500) if hasattr(types, "HttpOptions") else None
             client = genai.Client(api_key=api_key, http_options=http_opts) if http_opts else genai.Client(api_key=api_key)
             prompt = f"""
             You are an expert academic study strategist. Create an optimized study timetable for today.
@@ -2210,7 +2809,7 @@ def generate_schedule():
             }}
             """
 
-            for model_name in ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash']:
+            for model_name in ['gemini-2.5-flash']:
                 try:
                     response = client.models.generate_content(
                         model=model_name,
@@ -2228,8 +2827,74 @@ def generate_schedule():
             app.logger.warning("Gemini scheduler error: %s", e)
 
     # Deterministic Local Fallback Generator
-    local_schedule = generate_local_schedule(subjects, available_hours, start_time, end_time)
-    return jsonify({"success": True, "schedule": [local_schedule]}), 200
+    result = build_advanced_schedule(
+        subjects=subjects,
+        available_hours=available_hours,
+        start_time=start_time,
+        end_time=end_time,
+        planning_mode=planning_mode,
+        break_preference=break_preference,
+        focus_preference=focus_preference
+    )
+    return jsonify({
+        "success": True,
+        "schedule": result["schedule"],
+        "unscheduled": result["unscheduled"]
+    }), 200
+
+
+@app.route("/save-timetable", methods=["POST"])
+def save_timetable():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get("userId") or 999
+    schedule = data.get("schedule", [])
+    unscheduled = data.get("unscheduled", [])
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    payload = json.dumps({"schedule": schedule, "unscheduled": unscheduled})
+    cursor.execute("SELECT id FROM user_timetables WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if row:
+        cursor.execute("UPDATE user_timetables SET schedule_json = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?", (payload, user_id))
+    else:
+        cursor.execute("INSERT INTO user_timetables (user_id, schedule_json) VALUES (?, ?)", (user_id, payload))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "message": "Timetable saved successfully."}), 200
+
+
+@app.route("/get-timetable", methods=["GET", "POST"])
+def get_timetable():
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        user_id = data.get("userId")
+    else:
+        user_id = request.args.get("userId")
+    user_id = user_id or 999
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT schedule_json, updated_at FROM user_timetables WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row and row["schedule_json"]:
+        try:
+            parsed = json.loads(row["schedule_json"])
+            return jsonify({
+                "success": True,
+                "schedule": parsed.get("schedule", []),
+                "unscheduled": parsed.get("unscheduled", []),
+                "updatedAt": row["updated_at"]
+            }), 200
+        except Exception:
+            pass
+
+    return jsonify({"success": False, "message": "No saved timetable found.", "schedule": []}), 200
+
+
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT") or os.getenv("FLASK_PORT") or 5000)
